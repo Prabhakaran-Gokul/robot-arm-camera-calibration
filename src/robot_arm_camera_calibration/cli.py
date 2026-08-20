@@ -13,24 +13,34 @@ from robot_arm_camera_calibration.solvers.opencv_robot_world import OpenCVRobotW
 from robot_arm_camera_calibration.targets.factory import build_target
 
 
-def _build_robot_and_camera(config: CalibrationConfig, mock: bool) -> tuple[RobotArm, Camera]:
+def _build_robot_and_camera(
+    config: CalibrationConfig, mock: bool, control_enabled: bool = True
+) -> tuple[RobotArm, Camera]:
     if mock:
         return MockRobotArm(), MockCamera()
 
     from robot_arm_camera_calibration.cameras.realsense import RealSenseCamera
     from robot_arm_camera_calibration.robots.ur5e import UR5eArm
 
-    return UR5eArm(config.robot_ip), RealSenseCamera()
+    return UR5eArm(config.robot_ip, control_enabled=control_enabled), RealSenseCamera()
 
 
 def _collect(args: argparse.Namespace) -> None:
     from robot_arm_camera_calibration.apps.collect import CollectionApp
 
     config = CalibrationConfig.from_yaml(Path(args.config))
-    robot, camera = _build_robot_and_camera(config, args.mock)
+    robot, camera = _build_robot_and_camera(
+        config, args.mock, control_enabled=not args.teach_pendant
+    )
     target = build_target(config.target)
     CollectionApp(
-        config, robot, camera, target, OpenCVRobotWorldHandEyeSolver(), port=args.port
+        config,
+        robot,
+        camera,
+        target,
+        OpenCVRobotWorldHandEyeSolver(),
+        port=args.port,
+        jog_enabled=not args.teach_pendant,
     ).run()
 
 
@@ -38,7 +48,8 @@ def _verify(args: argparse.Namespace) -> None:
     from robot_arm_camera_calibration.apps.verify import VerifyApp
 
     config = CalibrationConfig.from_yaml(Path(args.config))
-    robot, camera = _build_robot_and_camera(config, args.mock)
+    # VerifyApp only reads robot state, never commands motion, so it never needs control.
+    robot, camera = _build_robot_and_camera(config, args.mock, control_enabled=False)
     result = CalibrationResult.from_yaml(Path(args.result))
     VerifyApp(robot, camera, result, port=args.port).run()
 
@@ -50,6 +61,12 @@ def main() -> None:
     collect_parser = subparsers.add_parser("collect", help="Run the calibration collection app")
     collect_parser.add_argument("--config", required=True, help="Path to a CalibrationConfig YAML")
     collect_parser.add_argument("--mock", action="store_true", help="Use in-memory mock hardware")
+    collect_parser.add_argument(
+        "--teach-pendant",
+        action="store_true",
+        help="Drive the robot from the teach pendant instead of viser jog controls; "
+        "the app only reads poses to capture samples and never commands motion",
+    )
     collect_parser.add_argument("--port", type=int, default=8080)
     collect_parser.set_defaults(func=_collect)
 

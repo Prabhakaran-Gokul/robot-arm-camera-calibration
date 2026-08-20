@@ -6,6 +6,11 @@ current target pose every control cycle (holding position between jog commands r
 same pose, satisfying the watchdog); servo_to_pose() just swaps the lock-protected target that
 loop is reading. moveJ is blocking and would conflict with a concurrently-streaming servoL, so
 move_to_joint_positions() pauses the streaming loop for its duration.
+
+RTDEControlInterface uploads and runs an external-control script on the robot as soon as it
+connects, which takes the teach pendant out of manual jog/freedrive control while active.
+control_enabled=False skips creating it entirely, leaving the pendant in full control, while
+RTDEReceiveInterface (read-only) still works for capturing sample poses.
 """
 
 from __future__ import annotations
@@ -27,8 +32,9 @@ _GAIN = 300
 
 
 class UR5eArm(RobotArm):
-    def __init__(self, robot_ip: str) -> None:
+    def __init__(self, robot_ip: str, control_enabled: bool = True) -> None:
         self._robot_ip = robot_ip
+        self._control_enabled = control_enabled
         self._rtde_c: rtde_control.RTDEControlInterface | None = None
         self._rtde_r: rtde_receive.RTDEReceiveInterface | None = None
         self._lock = threading.Lock()
@@ -40,8 +46,10 @@ class UR5eArm(RobotArm):
         self._servo_thread: threading.Thread | None = None
 
     def connect(self) -> None:
-        self._rtde_c = rtde_control.RTDEControlInterface(self._robot_ip)
         self._rtde_r = rtde_receive.RTDEReceiveInterface(self._robot_ip)
+        if not self._control_enabled:
+            return
+        self._rtde_c = rtde_control.RTDEControlInterface(self._robot_ip)
         self._target_pose = self.get_tcp_pose()
         self._stop_event.clear()
         self._servo_thread = threading.Thread(target=self._servo_loop, daemon=True)
@@ -59,7 +67,9 @@ class UR5eArm(RobotArm):
 
     @property
     def is_connected(self) -> bool:
-        return self._rtde_c is not None and self._rtde_r is not None
+        if self._rtde_r is None:
+            return False
+        return self._rtde_c is not None if self._control_enabled else True
 
     def get_tcp_pose(self) -> Transform:
         assert self._rtde_r is not None, "Robot is not connected"
@@ -70,6 +80,10 @@ class UR5eArm(RobotArm):
         return np.array(self._rtde_r.getActualQ(), dtype=np.float64)
 
     def servo_to_pose(self, target: Transform, *, speed: float, acceleration: float) -> None:
+        assert self._rtde_c is not None, (
+            "Robot control is disabled (control_enabled=False) — connect with "
+            "control_enabled=True to jog, or drive the robot from the teach pendant instead"
+        )
         with self._lock:
             self._target_pose = target
             self._servo_speed = speed
@@ -78,7 +92,7 @@ class UR5eArm(RobotArm):
     def move_to_joint_positions(
         self, joint_positions: npt.NDArray[np.float64], *, speed: float, acceleration: float
     ) -> None:
-        assert self._rtde_c is not None, "Robot is not connected"
+        assert self._rtde_c is not None, "Robot control is disabled (control_enabled=False)"
         self._paused.set()
         try:
             self._rtde_c.moveJ(

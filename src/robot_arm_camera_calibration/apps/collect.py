@@ -43,14 +43,20 @@ class CollectionApp:
         solver: HandEyeSolver,
         urdf_description: str = "ur5e_description",
         port: int = 8080,
+        jog_enabled: bool = True,
     ) -> None:
         self._config = config
         self._robot = robot
         self._camera = camera
         self._target = target
         self._urdf_description = urdf_description
+        self._jog_enabled = jog_enabled
         self._session = CalibrationSession(robot, camera, target, solver, config)
-        self._jog = JogController(robot, config.workspace_limits, config.jog_limits)
+        self._jog = (
+            JogController(robot, config.workspace_limits, config.jog_limits)
+            if jog_enabled
+            else None
+        )
         self._last_result: CalibrationResult | None = None
         self._sample_row_folder: viser.GuiFolderHandle | None = None
         self._sample_row_buttons: dict[int, viser.GuiButtonHandle] = {}
@@ -75,32 +81,37 @@ class CollectionApp:
             connect_button.on_click(lambda _: self._on_connect())
             self._disconnect_button.on_click(lambda _: self._on_disconnect())
 
-        with gui.add_folder("Jog"):
-            self._step_m = gui.add_slider(
-                "Step (m)",
-                min=0.001,
-                max=self._config.jog_limits.max_step_m,
-                step=0.001,
-                initial_value=self._config.jog_limits.max_step_m / 2,
+        if self._jog_enabled:
+            with gui.add_folder("Jog"):
+                self._step_m = gui.add_slider(
+                    "Step (m)",
+                    min=0.001,
+                    max=self._config.jog_limits.max_step_m,
+                    step=0.001,
+                    initial_value=self._config.jog_limits.max_step_m / 2,
+                )
+                self._step_deg = gui.add_slider(
+                    "Step (deg)",
+                    min=0.5,
+                    max=self._config.jog_limits.max_step_deg,
+                    step=0.5,
+                    initial_value=self._config.jog_limits.max_step_deg / 2,
+                )
+                for axis_name, axis in _JOG_AXES:
+                    for sign, label in ((1.0, f"+{axis_name}"), (-1.0, f"-{axis_name}")):
+                        gui.add_button(f"Move {label}").on_click(
+                            lambda _, a=axis, s=sign: self._on_translate(s * a)
+                        )
+                for axis_name, axis in _JOG_AXES:
+                    for sign, label in ((1.0, f"+R{axis_name}"), (-1.0, f"-R{axis_name}")):
+                        gui.add_button(f"Rotate {label}").on_click(
+                            lambda _, a=axis, s=sign: self._on_rotate(s * a)
+                        )
+                self._jog_status_markdown = gui.add_markdown("")
+        else:
+            gui.add_markdown(
+                "**Jog:** disabled — move the robot from the teach pendant, then capture."
             )
-            self._step_deg = gui.add_slider(
-                "Step (deg)",
-                min=0.5,
-                max=self._config.jog_limits.max_step_deg,
-                step=0.5,
-                initial_value=self._config.jog_limits.max_step_deg / 2,
-            )
-            for axis_name, axis in _JOG_AXES:
-                for sign, label in ((1.0, f"+{axis_name}"), (-1.0, f"-{axis_name}")):
-                    gui.add_button(f"Move {label}").on_click(
-                        lambda _, a=axis, s=sign: self._on_translate(s * a)
-                    )
-            for axis_name, axis in _JOG_AXES:
-                for sign, label in ((1.0, f"+R{axis_name}"), (-1.0, f"-R{axis_name}")):
-                    gui.add_button(f"Rotate {label}").on_click(
-                        lambda _, a=axis, s=sign: self._on_rotate(s * a)
-                    )
-            self._jog_status_markdown = gui.add_markdown("")
 
         with gui.add_folder("Samples"):
             gui.add_button("Capture Sample").on_click(lambda _: self._on_capture())
@@ -151,6 +162,7 @@ class CollectionApp:
         translation_delta_m: np.ndarray | None = None,
         rotation_delta_deg: np.ndarray | None = None,
     ) -> None:
+        assert self._jog is not None, "Jog buttons should only be wired up when jog_enabled=True"
         if not self._robot.is_connected:
             self._jog_status_markdown.content = "Connect to the robot before jogging."
             return
