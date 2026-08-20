@@ -8,7 +8,9 @@ from robot_arm_camera_calibration.cameras.base import CameraIntrinsics
 from robot_arm_camera_calibration.core.transform import Transform
 from robot_arm_camera_calibration.targets.base import CalibrationTarget, TargetDetection
 
-_MIN_CORNERS_FOR_POSE = 4
+# cv2.solvePnP's default (DLT) algorithm raises rather than failing gracefully with fewer than
+# 6 point correspondences, so this is a hard floor, not just a quality threshold.
+_MIN_CORNERS_FOR_POSE = 6
 
 
 class CharucoBoardTarget(CalibrationTarget):
@@ -41,12 +43,19 @@ class CharucoBoardTarget(CalibrationTarget):
         ):
             return None
 
-        object_points, image_points = self._board.matchImagePoints(
-            list(charuco_corners), charuco_ids
-        )
-        ok, rvec, tvec = cv2.solvePnP(
-            object_points, image_points, intrinsics.camera_matrix, intrinsics.dist_coeffs
-        )
+        # A partially-visible board (e.g. exiting frame) can yield corners that are technically
+        # >= _MIN_CORNERS_FOR_POSE but nearly collinear/degenerate for PnP; OpenCV raises a
+        # C++ exception for those rather than just returning ok=False, so it must be caught here
+        # rather than left to propagate and kill the caller's update loop.
+        try:
+            object_points, image_points = self._board.matchImagePoints(
+                list(charuco_corners), charuco_ids
+            )
+            ok, rvec, tvec = cv2.solvePnP(
+                object_points, image_points, intrinsics.camera_matrix, intrinsics.dist_coeffs
+            )
+        except cv2.error:
+            return None
         if not ok:
             return None
 

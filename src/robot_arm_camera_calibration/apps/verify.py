@@ -51,8 +51,13 @@ class VerifyApp:
         self._server.sleep_forever()
 
     def _tick_loop(self) -> None:
+        # See CollectionApp._tick_loop: this polls live hardware indefinitely in the
+        # background, so one bad frame must not silently kill live updates for the session.
         while True:
-            self._tick()
+            try:
+                self._tick()
+            except Exception as error:
+                print(f"[verify] tick failed, skipping this frame: {error}")
             time.sleep(1.0 / _TICK_HZ)
 
     def _tick(self) -> None:

@@ -244,8 +244,14 @@ class CollectionApp:
         self._result_markdown.content += f"  \nSaved to `{path}`"
 
     def _tick_loop(self) -> None:
+        # This loop polls live hardware indefinitely in the background; one bad frame (a sensor
+        # hiccup, a marker at a degenerate pose, ...) must not silently kill live updates for
+        # the rest of the session, so per-iteration failures are logged and skipped, not raised.
         while True:
-            self._tick()
+            try:
+                self._tick()
+            except Exception as error:
+                print(f"[collect] tick failed, skipping this frame: {error}")
             time.sleep(1.0 / _TICK_HZ)
 
     def _tick(self) -> None:

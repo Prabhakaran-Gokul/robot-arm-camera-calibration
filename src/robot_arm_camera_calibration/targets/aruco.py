@@ -38,13 +38,19 @@ class ArucoMarkerTarget(CalibrationTarget):
             return None
 
         image_points = corners[int(matches[0])].reshape(4, 2)
-        ok, rvec, tvec = cv2.solvePnP(
-            self._object_points,
-            image_points,
-            intrinsics.camera_matrix,
-            intrinsics.dist_coeffs,
-            flags=cv2.SOLVEPNP_IPPE_SQUARE,
-        )
+        # A severely foreshortened/edge-clipped marker can yield corners OpenCV raises a C++
+        # exception for rather than just returning ok=False, so it must be caught here rather
+        # than left to propagate and kill the caller's update loop.
+        try:
+            ok, rvec, tvec = cv2.solvePnP(
+                self._object_points,
+                image_points,
+                intrinsics.camera_matrix,
+                intrinsics.dist_coeffs,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE,
+            )
+        except cv2.error:
+            return None
         if not ok:
             return None
 

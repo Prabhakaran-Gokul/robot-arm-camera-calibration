@@ -87,27 +87,40 @@ def test_aruco_target_returns_none_when_absent() -> None:
     assert target.detect(blank, _INTRINSICS) is None
 
 
-def test_charuco_target_recovers_known_pose() -> None:
-    dictionary_name = "DICT_5X5_100"
-    squares_x, squares_y, square_length_m, marker_length_m = 5, 7, 0.03, 0.022
-    dictionary = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dictionary_name))
+_CHARUCO_DICT = "DICT_5X5_100"
+_CHARUCO_SQUARES_X, _CHARUCO_SQUARES_Y = 5, 7
+_CHARUCO_SQUARE_M, _CHARUCO_MARKER_M = 0.03, 0.022
+_CHARUCO_PX_PER_SQUARE = 40
+
+
+def _charuco_board_and_image() -> tuple[cv2.aruco.CharucoBoard, np.ndarray, np.ndarray]:
+    dictionary = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, _CHARUCO_DICT))
     board = cv2.aruco.CharucoBoard(
-        (squares_x, squares_y), square_length_m, marker_length_m, dictionary
+        (_CHARUCO_SQUARES_X, _CHARUCO_SQUARES_Y), _CHARUCO_SQUARE_M, _CHARUCO_MARKER_M, dictionary
     )
-    px_per_square = 40
     board_image = board.generateImage(
-        (squares_x * px_per_square, squares_y * px_per_square), marginSize=0
+        (_CHARUCO_SQUARES_X * _CHARUCO_PX_PER_SQUARE, _CHARUCO_SQUARES_Y * _CHARUCO_PX_PER_SQUARE),
+        marginSize=0,
     )
     board_image = cv2.cvtColor(board_image, cv2.COLOR_GRAY2BGR)
     board_object_corners = np.array(
         [
             [0, 0, 0],
-            [squares_x * square_length_m, 0, 0],
-            [squares_x * square_length_m, squares_y * square_length_m, 0],
-            [0, squares_y * square_length_m, 0],
+            [_CHARUCO_SQUARES_X * _CHARUCO_SQUARE_M, 0, 0],
+            [
+                _CHARUCO_SQUARES_X * _CHARUCO_SQUARE_M,
+                _CHARUCO_SQUARES_Y * _CHARUCO_SQUARE_M,
+                0,
+            ],
+            [0, _CHARUCO_SQUARES_Y * _CHARUCO_SQUARE_M, 0],
         ],
         dtype=np.float64,
     )
+    return board, board_image, board_object_corners
+
+
+def test_charuco_target_recovers_known_pose() -> None:
+    _board, board_image, board_object_corners = _charuco_board_and_image()
 
     # Unlike the single-marker convention, CharucoBoard's object frame has +Y already
     # aligned with the image's row direction, so no 180-degree "facing camera" flip is needed.
@@ -116,7 +129,7 @@ def test_charuco_target_recovers_known_pose() -> None:
     canvas = _warp_planar_image(board_image, board_object_corners, true_rvec, true_tvec)
 
     target = CharucoBoardTarget(
-        dictionary_name, squares_x, squares_y, square_length_m, marker_length_m
+        _CHARUCO_DICT, _CHARUCO_SQUARES_X, _CHARUCO_SQUARES_Y, _CHARUCO_SQUARE_M, _CHARUCO_MARKER_M
     )
     detection = target.detect(canvas, _INTRINSICS)
 
@@ -129,6 +142,25 @@ def test_charuco_target_recovers_known_pose() -> None:
 
 
 def test_charuco_target_returns_none_when_absent() -> None:
-    target = CharucoBoardTarget("DICT_5X5_100", 5, 7, 0.03, 0.022)
+    target = CharucoBoardTarget(
+        _CHARUCO_DICT, _CHARUCO_SQUARES_X, _CHARUCO_SQUARES_Y, _CHARUCO_SQUARE_M, _CHARUCO_MARKER_M
+    )
     blank = np.full((480, 640, 3), 255, np.uint8)
     assert target.detect(blank, _INTRINSICS) is None
+
+
+def test_charuco_target_handles_partially_visible_board_without_raising() -> None:
+    """Regression test: a board sliding out of frame yields a corner set that's technically
+    non-empty but too small/degenerate for cv2.solvePnP's default (DLT) algorithm, which raises
+    a C++ exception rather than failing gracefully for fewer than 6 points. detect() must catch
+    this and return None, not propagate the exception into the caller's update loop."""
+    _board, board_image, _corners = _charuco_board_and_image()
+    _height, width = board_image.shape[:2]
+    target = CharucoBoardTarget(
+        _CHARUCO_DICT, _CHARUCO_SQUARES_X, _CHARUCO_SQUARES_Y, _CHARUCO_SQUARE_M, _CHARUCO_MARKER_M
+    )
+
+    for row_height in (100, 60, 30):
+        canvas = np.full((480, 640, 3), 255, np.uint8)
+        canvas[100 : 100 + row_height, 50 : 50 + width] = board_image[:row_height, :]
+        assert target.detect(canvas, _INTRINSICS) is None
