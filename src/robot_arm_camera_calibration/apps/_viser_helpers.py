@@ -20,15 +20,25 @@ def transform_to_wxyz_position(
     return (float(w), float(x), float(y), float(z)), (float(tx), float(ty), float(tz))
 
 
-def rotation_diversity_deg(rotations: list[npt.NDArray[np.float64]]) -> float:
-    """Max pairwise rotation angle (degrees) across a set of rotation matrices — a cheap proxy
-    for whether captured samples vary enough in orientation for hand-eye calibration to work."""
-    if len(rotations) < 2:
-        return 0.0
-    max_angle = 0.0
+def rotation_axis_coverage(rotations: list[npt.NDArray[np.float64]]) -> float:
+    """0-1 score for how well the sample set's relative-rotation AXES span 3D space.
+
+    The Tsai-Lenz observability condition for hand-eye calibration requires the samples'
+    relative rotations to span at least two non-parallel axes — a large angle between two
+    samples means little if every sample rotates about roughly the same axis, since the
+    underlying linear solve is still near-singular. Near 0 means the axes are collinear or
+    coplanar (degenerate, even with large individual angles); 1.0 means isotropic coverage
+    across all three axes (the smallest and largest eigenvalues of the axis scatter match)."""
+    axes = []
     for i, r_i in enumerate(rotations):
         for r_j in rotations[i + 1 :]:
-            relative = r_i.T @ r_j
-            angle = np.degrees(np.arccos(np.clip((np.trace(relative) - 1) / 2, -1.0, 1.0)))
-            max_angle = max(max_angle, float(angle))
-    return max_angle
+            rotvec = Rotation.from_matrix(r_i.T @ r_j).as_rotvec()
+            angle = np.linalg.norm(rotvec)
+            if angle > 1e-6:
+                axes.append(rotvec / angle)
+    if len(axes) < 2:
+        return 0.0
+    axes_array = np.array(axes)
+    scatter = axes_array.T @ axes_array / len(axes_array)
+    eigenvalues = np.linalg.eigvalsh(scatter)
+    return float(eigenvalues.min() / eigenvalues.max())

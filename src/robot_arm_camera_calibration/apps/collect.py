@@ -12,7 +12,7 @@ from viser.extras import ViserUrdf
 
 from robot_arm_camera_calibration.apps._viser_helpers import (
     load_urdf,
-    rotation_diversity_deg,
+    rotation_axis_coverage,
     transform_to_wxyz_position,
 )
 from robot_arm_camera_calibration.cameras.base import Camera
@@ -26,6 +26,8 @@ from robot_arm_camera_calibration.solvers.base import HandEyeSolver
 from robot_arm_camera_calibration.targets.base import CalibrationTarget
 
 _TICK_HZ = 15.0
+_RECOMMENDED_MIN_SAMPLES = 15
+_GOOD_AXIS_COVERAGE = 0.15
 _JOG_AXES = (
     ("X", np.array([1.0, 0.0, 0.0])),
     ("Y", np.array([0.0, 1.0, 0.0])),
@@ -204,13 +206,18 @@ class CollectionApp:
         if not samples:
             self._samples_markdown.content = "No samples captured yet."
             return
-        diversity = rotation_diversity_deg([s.gripper_pose_in_base.rotation for s in samples])
-        diversity_note = (
-            "⚠️ low — vary orientation, not just position" if diversity < 30.0 else "good"
-        )
+        coverage = rotation_axis_coverage([s.gripper_pose_in_base.rotation for s in samples])
+        warnings = []
+        if len(samples) < _RECOMMENDED_MIN_SAMPLES:
+            warnings.append(f"⚠️ only {len(samples)} samples, aim for {_RECOMMENDED_MIN_SAMPLES}+")
+        if coverage < _GOOD_AXIS_COVERAGE:
+            warnings.append(
+                "⚠️ rotations look like they share an axis — tilt in more different "
+                "directions (pitch, roll, and yaw), not just by a larger angle"
+            )
+        status = " / ".join(warnings) if warnings else "looks reasonable"
         self._samples_markdown.content = (
-            f"**{len(samples)} samples** — rotational diversity: "
-            f"{diversity:.0f}° ({diversity_note})"
+            f"**{len(samples)} samples** — rotation axis coverage: {coverage:.2f} ({status})"
         )
 
     def _on_calibrate(self) -> None:
