@@ -1,8 +1,7 @@
-"""Blocking-gate test: proves the calibrateRobotWorldHandEye wiring in
-OpenCVRobotWorldHandEyeSolver is correct by forward-simulating fake samples
-from a known ground truth and checking the solver recovers it. This is the
-actual source of truth for the solver's input/output convention, not the
-docstring derivation in opencv_robot_world.py (see its module docstring)."""
+"""Blocking-gate tests: prove each solver's OpenCV wiring is correct by forward-simulating fake
+samples from a known ground truth and checking the solver recovers it. This is the actual source
+of truth for each solver's input/output convention, not the docstring derivations in
+solvers/opencv_robot_world.py and solvers/opencv_hand_eye.py."""
 
 from datetime import UTC, datetime
 
@@ -12,11 +11,18 @@ from scipy.spatial.transform import Rotation
 
 from robot_arm_camera_calibration.core.samples import CalibrationSample
 from robot_arm_camera_calibration.core.transform import Transform
+from robot_arm_camera_calibration.solvers.base import HandEyeSolver
+from robot_arm_camera_calibration.solvers.opencv_hand_eye import OpenCVHandEyeSolver
 from robot_arm_camera_calibration.solvers.opencv_robot_world import (
     OpenCVRobotWorldHandEyeSolver,
 )
 
 _NUM_SAMPLES = 20
+_SOLVERS = [
+    pytest.param(OpenCVRobotWorldHandEyeSolver(), id="robot-world"),
+    pytest.param(OpenCVHandEyeSolver(), id="hand-eye-park"),
+    pytest.param(OpenCVHandEyeSolver(method=0), id="hand-eye-tsai"),
+]
 
 
 def _random_transform(rng: np.random.Generator, translation_scale: float) -> Transform:
@@ -59,13 +65,18 @@ def _perturb(
     return transform @ noise
 
 
-def test_solver_recovers_ground_truth_noiseless() -> None:
+def _rotation_angle_error_deg(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.degrees(np.arccos(np.clip((np.trace(a.T @ b) - 1) / 2, -1.0, 1.0))))
+
+
+@pytest.mark.parametrize("solver", _SOLVERS)
+def test_solver_recovers_ground_truth_noiseless(solver: HandEyeSolver) -> None:
     rng = np.random.default_rng(42)
     true_camera_pose_in_base = _random_transform(rng, translation_scale=1.0)
     true_marker_pose_in_gripper = _random_transform(rng, translation_scale=0.05)
     samples = _simulate_samples(rng, true_camera_pose_in_base, true_marker_pose_in_gripper)
 
-    result = OpenCVRobotWorldHandEyeSolver().solve(samples)
+    result = solver.solve(samples)
 
     np.testing.assert_allclose(
         result.camera_pose_in_base.matrix, true_camera_pose_in_base.matrix, atol=1e-6
@@ -77,7 +88,8 @@ def test_solver_recovers_ground_truth_noiseless() -> None:
     assert result.rotation_residual_rmse_deg == pytest.approx(0.0, abs=1e-4)
 
 
-def test_solver_is_robust_to_small_noise() -> None:
+@pytest.mark.parametrize("solver", _SOLVERS)
+def test_solver_is_robust_to_small_noise(solver: HandEyeSolver) -> None:
     rng = np.random.default_rng(7)
     true_camera_pose_in_base = _random_transform(rng, translation_scale=1.0)
     true_marker_pose_in_gripper = _random_transform(rng, translation_scale=0.05)
@@ -89,27 +101,13 @@ def test_solver_is_robust_to_small_noise() -> None:
         noise_std_deg=0.1,
     )
 
-    result = OpenCVRobotWorldHandEyeSolver().solve(samples)
+    result = solver.solve(samples)
 
     np.testing.assert_allclose(
-        result.camera_pose_in_base.translation,
-        true_camera_pose_in_base.translation,
-        atol=0.01,
+        result.camera_pose_in_base.translation, true_camera_pose_in_base.translation, atol=0.01
     )
-    angle_error_deg = np.degrees(
-        np.arccos(
-            np.clip(
-                (
-                    np.trace(
-                        result.camera_pose_in_base.rotation.T @ true_camera_pose_in_base.rotation
-                    )
-                    - 1
-                )
-                / 2,
-                -1.0,
-                1.0,
-            )
-        )
+    angle_error_deg = _rotation_angle_error_deg(
+        result.camera_pose_in_base.rotation, true_camera_pose_in_base.rotation
     )
     assert angle_error_deg < 1.0
     assert result.translation_residual_rmse_m < 0.005

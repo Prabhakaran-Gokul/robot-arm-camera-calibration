@@ -9,8 +9,20 @@ from robot_arm_camera_calibration.core.config import CalibrationConfig
 from robot_arm_camera_calibration.core.results import CalibrationResult
 from robot_arm_camera_calibration.robots.base import RobotArm
 from robot_arm_camera_calibration.robots.mock import MockRobotArm
+from robot_arm_camera_calibration.solvers.base import HandEyeSolver
+from robot_arm_camera_calibration.solvers.opencv_hand_eye import OpenCVHandEyeSolver
 from robot_arm_camera_calibration.solvers.opencv_robot_world import OpenCVRobotWorldHandEyeSolver
 from robot_arm_camera_calibration.targets.factory import build_target
+
+_SOLVERS = {
+    "robot-world": OpenCVRobotWorldHandEyeSolver,
+    "hand-eye-park": lambda: OpenCVHandEyeSolver(),
+    "hand-eye-tsai": lambda: OpenCVHandEyeSolver(method=0),
+}
+
+
+def _build_solver(name: str) -> HandEyeSolver:
+    return _SOLVERS[name]()
 
 
 def _build_robot_and_camera(
@@ -38,7 +50,7 @@ def _collect(args: argparse.Namespace) -> None:
         robot,
         camera,
         target,
-        OpenCVRobotWorldHandEyeSolver(),
+        _build_solver(args.solver),
         port=args.port,
         jog_enabled=not args.teach_pendant,
     ).run()
@@ -66,6 +78,15 @@ def main() -> None:
         action="store_true",
         help="Drive the robot from the teach pendant instead of viser jog controls; "
         "the app only reads poses to capture samples and never commands motion",
+    )
+    collect_parser.add_argument(
+        "--solver",
+        choices=sorted(_SOLVERS),
+        default="robot-world",
+        help="Hand-eye solver: robot-world (default, calibrateRobotWorldHandEye) solves the "
+        "camera extrinsic and EE-to-marker offset jointly; hand-eye-park/hand-eye-tsai "
+        "(calibrateHandEye) solve the extrinsic from relative motions, then recover the "
+        "EE-to-marker offset as a separate closed-form step",
     )
     collect_parser.add_argument("--port", type=int, default=8080)
     collect_parser.set_defaults(func=_collect)
