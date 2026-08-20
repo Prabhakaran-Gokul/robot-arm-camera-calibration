@@ -1,0 +1,60 @@
+[project]
+name = "robot-arm-camera-calibration"
+version = "0.1.0"
+description = "ROS-independent robot arm / camera extrinsic calibration library"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.14",
+    "pyyaml>=6.0",
+    "opencv-contrib-python>=4.10,<5",
+    "viser>=0.2",
+    "robot_descriptions>=1.11",
+    "yourdfpy>=0.0.56",
+    "xacrodoc>=2.0.1",
+]
+
+[project.optional-dependencies]
+hardware = [
+    "ur_rtde>=1.6",
+    "pyrealsense2>=2.55",
+]
+dev = [
+    "ruff>=0.8",
+    "pyright>=1.1.390",
+    "pytest>=8.3",
+]
+
+[project.scripts]
+robot-calib = "robot_arm_camera_calibration.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/robot_arm_camera_calibration"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "N", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pyright]
+pythonVersion = "3.13"
+include = ["src", "tests"]
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
+reportMissingTypeStubs = false
+
+[tool.pytest.ini_options]
+markers = ["hardware: requires physically-connected UR5e/RealSense"]
+addopts = "-m 'not hardware'"
+testpaths = ["tests"]

@@ -1,0 +1,19 @@
+robot_ip: 192.168.1.100
+target:
+  kind: charuco
+  dictionary: DICT_5X5_100
+  squares_x: 5
+  squares_y: 7
+  square_length_m: 0.03
+  marker_length_m: 0.022
+camera:
+  intrinsics_source: device
+workspace_limits:
+  min_xyz_m: [-0.6, -0.6, 0.0]
+  max_xyz_m: [0.6, 0.6, 1.0]
+jog_limits:
+  max_step_m: 0.02
+  max_step_deg: 5.0
+  speed_m_s: 0.05
+  acceleration_m_s2: 0.3
+results_dir: results
