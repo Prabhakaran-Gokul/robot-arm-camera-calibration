@@ -40,6 +40,19 @@ class RobotArm(ABC):
     @abstractmethod
     def stop(self) -> None: ...
 
+    @abstractmethod
+    def start_freedrive(self) -> None:
+        """Let a human push the arm by hand (gravity-compensated manual guidance). Any
+        streaming/target-pose control pauses for the duration."""
+
+    @abstractmethod
+    def stop_freedrive(self) -> None:
+        """Exit freedrive and resume normal position control from the current pose."""
+
+    @property
+    @abstractmethod
+    def is_freedrive_active(self) -> bool: ...
+
     def __enter__(self) -> RobotArm:
         self.connect()
         return self

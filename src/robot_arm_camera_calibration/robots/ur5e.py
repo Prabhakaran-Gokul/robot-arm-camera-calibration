@@ -18,6 +18,11 @@ ur_rtde surfaces this as a raw exception (a boost.asio "End of file" is typical)
 clean error. Both interfaces expose isConnected()/reconnect() for exactly this; every call that
 touches them checks and transparently reconnects first, so a transient drop doesn't leave the
 robot's reported pose frozen or crash the caller.
+
+start_freedrive()/stop_freedrive() use RTDEControlInterface's teachMode()/endTeachMode() for
+gravity-compensated manual guidance entirely through the RTDE control channel, so the robot
+never needs to leave Remote mode — unlike the pendant's own freedrive button, which needs Local
+control and would conflict with an active RTDE control connection.
 """
 
 from __future__ import annotations
@@ -51,6 +56,7 @@ class UR5eArm(RobotArm):
         self._paused = threading.Event()
         self._stop_event = threading.Event()
         self._servo_thread: threading.Thread | None = None
+        self._freedrive_active = False
 
     def connect(self) -> None:
         self._rtde_r = rtde_receive.RTDEReceiveInterface(self._robot_ip)
@@ -63,6 +69,8 @@ class UR5eArm(RobotArm):
         self._servo_thread.start()
 
     def disconnect(self) -> None:
+        if self._freedrive_active:
+            self.stop_freedrive()
         self._stop_event.set()
         if self._servo_thread is not None:
             self._servo_thread.join(timeout=1.0)
@@ -131,6 +139,25 @@ class UR5eArm(RobotArm):
     def stop(self) -> None:
         if self._rtde_c is not None:
             self._rtde_c.servoStop()
+
+    def start_freedrive(self) -> None:
+        self._ensure_control_connected()
+        assert self._rtde_c is not None
+        self._paused.set()
+        self._rtde_c.teachMode()
+        self._freedrive_active = True
+
+    def stop_freedrive(self) -> None:
+        assert self._rtde_c is not None, "Robot control is disabled (control_enabled=False)"
+        self._rtde_c.endTeachMode()
+        self._freedrive_active = False
+        with self._lock:
+            self._target_pose = self.get_tcp_pose()
+        self._paused.clear()
+
+    @property
+    def is_freedrive_active(self) -> bool:
+        return self._freedrive_active
 
     def _servo_loop(self) -> None:
         assert self._rtde_c is not None

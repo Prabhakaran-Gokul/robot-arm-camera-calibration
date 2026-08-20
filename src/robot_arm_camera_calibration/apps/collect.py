@@ -62,6 +62,7 @@ class CollectionApp:
         self._last_result: CalibrationResult | None = None
         self._sample_row_folder: viser.GuiFolderHandle | None = None
         self._sample_row_buttons: dict[int, viser.GuiButtonHandle] = {}
+        self._jog_buttons: list[viser.GuiButtonHandle] = []
 
         self._server = viser.ViserServer(port=port)
         self._viser_urdf: ViserUrdf | None = None
@@ -99,17 +100,25 @@ class CollectionApp:
                     step=0.5,
                     initial_value=self._config.jog_limits.max_step_deg / 2,
                 )
+                # on_hold (not on_click) fires repeatedly while held, so a long press keeps
+                # nudging instead of requiring repeated clicks for a longer motion.
                 for axis_name, axis in _JOG_AXES:
                     for sign, label in ((1.0, f"+{axis_name}"), (-1.0, f"-{axis_name}")):
-                        gui.add_button(f"Move {label}").on_click(
-                            lambda _, a=axis, s=sign: self._on_translate(s * a)
-                        )
+                        button = gui.add_button(f"Move {label}")
+                        button.on_hold(lambda _, a=axis, s=sign: self._on_translate(s * a))
+                        self._jog_buttons.append(button)
                 for axis_name, axis in _JOG_AXES:
                     for sign, label in ((1.0, f"+R{axis_name}"), (-1.0, f"-R{axis_name}")):
-                        gui.add_button(f"Rotate {label}").on_click(
-                            lambda _, a=axis, s=sign: self._on_rotate(s * a)
-                        )
+                        button = gui.add_button(f"Rotate {label}")
+                        button.on_hold(lambda _, a=axis, s=sign: self._on_rotate(s * a))
+                        self._jog_buttons.append(button)
                 self._jog_status_markdown = gui.add_markdown("")
+
+            with gui.add_folder("Freedrive"):
+                self._start_freedrive_button = gui.add_button("Start Freedrive")
+                self._stop_freedrive_button = gui.add_button("Stop Freedrive", disabled=True)
+                self._start_freedrive_button.on_click(lambda _: self._on_start_freedrive())
+                self._stop_freedrive_button.on_click(lambda _: self._on_stop_freedrive())
         else:
             gui.add_markdown(
                 "**Jog:** disabled — move the robot from the teach pendant, then capture."
@@ -152,6 +161,11 @@ class CollectionApp:
         self._camera.disconnect()
         self._status_markdown.content = "**Status:** disconnected"
         self._disconnect_button.disabled = True
+        if self._jog_enabled:
+            self._start_freedrive_button.disabled = False
+            self._stop_freedrive_button.disabled = True
+            for button in self._jog_buttons:
+                button.disabled = False
 
     def _on_translate(self, direction: np.ndarray) -> None:
         self._jog_nudge(translation_delta_m=direction * self._step_m.value)
@@ -168,11 +182,31 @@ class CollectionApp:
         if not self._robot.is_connected:
             self._jog_status_markdown.content = "Connect to the robot before jogging."
             return
+        if self._robot.is_freedrive_active:
+            self._jog_status_markdown.content = "Stop freedrive before using the jog buttons."
+            return
         try:
             self._jog.nudge(translation_delta_m, rotation_delta_deg)
             self._jog_status_markdown.content = ""
         except CalibrationError as error:
             self._jog_status_markdown.content = f"⚠️ {error}"
+
+    def _on_start_freedrive(self) -> None:
+        if not self._robot.is_connected:
+            self._jog_status_markdown.content = "Connect to the robot before using freedrive."
+            return
+        self._robot.start_freedrive()
+        self._start_freedrive_button.disabled = True
+        self._stop_freedrive_button.disabled = False
+        for button in self._jog_buttons:
+            button.disabled = True
+
+    def _on_stop_freedrive(self) -> None:
+        self._robot.stop_freedrive()
+        self._start_freedrive_button.disabled = False
+        self._stop_freedrive_button.disabled = True
+        for button in self._jog_buttons:
+            button.disabled = False
 
     def _on_capture(self) -> None:
         try:

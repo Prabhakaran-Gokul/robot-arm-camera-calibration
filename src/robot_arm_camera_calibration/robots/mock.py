@@ -14,6 +14,7 @@ class MockRobotArm(RobotArm):
         self._connected = False
         self._pose = initial_pose if initial_pose is not None else Transform.identity()
         self._joint_positions: npt.NDArray[np.float64] = np.zeros(num_joints)
+        self._freedrive_active = False
 
     def connect(self) -> None:
         self._connected = True
@@ -43,3 +44,13 @@ class MockRobotArm(RobotArm):
 
     def stop(self) -> None:
         pass
+
+    def start_freedrive(self) -> None:
+        self._freedrive_active = True
+
+    def stop_freedrive(self) -> None:
+        self._freedrive_active = False
+
+    @property
+    def is_freedrive_active(self) -> bool:
+        return self._freedrive_active
