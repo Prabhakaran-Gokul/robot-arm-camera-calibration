@@ -57,9 +57,8 @@ class CollectionApp:
 
         self._server = viser.ViserServer(port=port)
         self._viser_urdf: ViserUrdf | None = None
-        self._target_frame = self._server.scene.add_frame(
-            "/target", visible=False, axes_length=0.08
-        )
+        self._camera_frustum: viser.CameraFrustumHandle | None = None
+        self._target_frame: viser.FrameHandle | None = None
         self._build_gui()
 
     def run(self) -> None:
@@ -118,6 +117,20 @@ class CollectionApp:
         self._robot.connect()
         self._camera.connect()
         self._viser_urdf = ViserUrdf(self._server, load_urdf(self._urdf_description))
+
+        intrinsics = self._camera.get_intrinsics()
+        fov = 2 * np.arctan(intrinsics.height / (2 * intrinsics.fy))
+        aspect = intrinsics.width / intrinsics.height
+        # "/camera" starts at the origin as a placeholder — its true base-frame pose isn't known
+        # until calibration succeeds (that's what we're solving for), at which point _on_calibrate
+        # moves it there. Everything parented under "/camera" (i.e. "/camera/target") is drawn
+        # relative to it, so the marker's camera-relative pose composes correctly either way.
+        self._camera_frustum = self._server.scene.add_camera_frustum(
+            "/camera", fov=fov, aspect=aspect, scale=0.08
+        )
+        self._target_frame = self._server.scene.add_frame(
+            "/camera/target", visible=False, axes_length=0.08
+        )
         self._status_markdown.content = "**Status:** connected"
         self._disconnect_button.disabled = False
 
@@ -199,10 +212,10 @@ class CollectionApp:
             f"**Translation RMSE:** {result.translation_residual_rmse_m * 1000:.2f} mm  \n"
             f"**Rotation RMSE:** {result.rotation_residual_rmse_deg:.3f}°"
         )
-        wxyz, position = transform_to_wxyz_position(result.camera_pose_in_base)
-        self._server.scene.add_frame(
-            "/solved_camera", wxyz=wxyz, position=position, axes_length=0.1
-        )
+        if self._camera_frustum is not None:
+            wxyz, position = transform_to_wxyz_position(result.camera_pose_in_base)
+            self._camera_frustum.wxyz = wxyz
+            self._camera_frustum.position = position
 
     def _on_save(self) -> None:
         if self._last_result is None:
@@ -222,7 +235,7 @@ class CollectionApp:
         if self._viser_urdf is not None:
             self._viser_urdf.update_cfg(self._robot.get_joint_positions())
 
-        if not self._camera.is_connected:
+        if not self._camera.is_connected or self._target_frame is None:
             return
         image = self._camera.get_color_frame()
         detection = self._target.detect(image, self._camera.get_intrinsics())
