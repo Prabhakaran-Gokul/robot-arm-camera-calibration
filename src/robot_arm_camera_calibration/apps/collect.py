@@ -68,6 +68,7 @@ class CollectionApp:
         self._viser_urdf: ViserUrdf | None = None
         self._camera_frustum: viser.CameraFrustumHandle | None = None
         self._target_frame: viser.FrameHandle | None = None
+        self._camera_image: viser.GuiImageHandle | None = None
         self._build_gui()
 
     def run(self) -> None:
@@ -83,6 +84,11 @@ class CollectionApp:
             self._disconnect_button = gui.add_button("Disconnect", disabled=True)
             connect_button.on_click(lambda _: self._on_connect())
             self._disconnect_button.on_click(lambda _: self._on_disconnect())
+
+        with gui.add_folder("Camera"):
+            self._camera_image = gui.add_image(
+                np.full((60, 80, 3), 200, dtype=np.uint8), label="Live feed"
+            )
 
         if self._jog_enabled:
             with gui.add_folder("Jog"):
@@ -289,19 +295,33 @@ class CollectionApp:
             time.sleep(1.0 / _TICK_HZ)
 
     def _tick(self) -> None:
-        if not self._robot.is_connected:
-            return
-        if self._viser_urdf is not None:
-            self._viser_urdf.update_cfg(self._robot.get_joint_positions())
+        if self._robot.is_connected:
+            if self._viser_urdf is not None:
+                self._viser_urdf.update_cfg(self._robot.get_joint_positions())
+            if self._robot.is_emergency_stopped:
+                self._status_markdown.content = (
+                    "**Status:** 🛑 emergency stopped — clear on the pendant"
+                )
+            elif self._robot.is_protective_stopped:
+                self._status_markdown.content = (
+                    "**Status:** ⚠️ protective stopped — clear and re-enable on the pendant"
+                )
+            else:
+                self._status_markdown.content = "**Status:** connected"
 
         if not self._camera.is_connected or self._target_frame is None:
             return
         image = self._camera.get_color_frame()
-        detection = self._target.detect(image, self._camera.get_intrinsics())
+        detection = self._target.detect(image, self._camera.get_intrinsics(), annotate=True)
         if detection is None:
             self._target_frame.visible = False
+            if self._camera_image is not None:
+                self._camera_image.image = image[:, :, ::-1]
             return
         wxyz, position = transform_to_wxyz_position(detection.pose_in_camera)
         self._target_frame.wxyz = wxyz
         self._target_frame.position = position
         self._target_frame.visible = True
+        if self._camera_image is not None:
+            shown = detection.annotated_image if detection.annotated_image is not None else image
+            self._camera_image.image = shown[:, :, ::-1]

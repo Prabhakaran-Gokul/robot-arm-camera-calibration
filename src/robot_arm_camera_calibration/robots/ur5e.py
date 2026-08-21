@@ -23,6 +23,22 @@ start_freedrive()/stop_freedrive() use RTDEControlInterface's teachMode()/endTea
 gravity-compensated manual guidance entirely through the RTDE control channel, so the robot
 never needs to leave Remote mode — unlike the pendant's own freedrive button, which needs Local
 control and would conflict with an active RTDE control connection.
+
+RTDEControlInterface itself is not thread-safe (ur_rtde's own docs say so): calling any of its
+methods concurrently from two threads — e.g. the background servo loop mid-servoL() while a GUI
+callback calls teachMode() — corrupts its internal state, surfacing on the pendant as "another
+thread is already controlling the robot" and in the log as "RTDE control script is not running".
+_rtde_lock serializes every direct call into it (_rtde_r_lock does the same for
+RTDEReceiveInterface); _state_lock is a separate, unrelated lock that only protects the plain
+_target_pose/_servo_speed/_servo_acceleration Python variables.
+
+A protective/emergency stop halts the running control script on the controller — reconnect()
+alone (a socket-level reconnect) does not bring it back, since the script itself is no longer
+running; reuploadScript() re-uploads and restarts it, which _ensure_control_connected() does
+whenever isProgramRunning() reports false. There is deliberately no way to clear the stop itself
+from software: is_protective_stopped/is_emergency_stopped only report the condition so the
+caller can surface it, since actually clearing a safety stop must stay a physical, human action
+on the pendant.
 """
 
 from __future__ import annotations
@@ -41,6 +57,7 @@ from robot_arm_camera_calibration.robots.base import RobotArm
 _CONTROL_HZ = 500.0
 _LOOKAHEAD_TIME_S = 0.1
 _GAIN = 300
+_SAFETY_STOP_POLL_INTERVAL_S = 0.5
 
 
 class UR5eArm(RobotArm):
@@ -49,7 +66,9 @@ class UR5eArm(RobotArm):
         self._control_enabled = control_enabled
         self._rtde_c: rtde_control.RTDEControlInterface | None = None
         self._rtde_r: rtde_receive.RTDEReceiveInterface | None = None
-        self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._rtde_lock = threading.Lock()
+        self._rtde_r_lock = threading.Lock()
         self._target_pose: Transform | None = None
         self._servo_speed = 0.05
         self._servo_acceleration = 0.3
@@ -75,48 +94,77 @@ class UR5eArm(RobotArm):
         if self._servo_thread is not None:
             self._servo_thread.join(timeout=1.0)
         if self._rtde_c is not None:
-            self._rtde_c.servoStop()
-            self._rtde_c.stopScript()
+            with self._rtde_lock:
+                self._rtde_c.servoStop()
+                self._rtde_c.stopScript()
         self._rtde_c = None
         self._rtde_r = None
 
     @property
     def is_connected(self) -> bool:
-        if self._rtde_r is None or not self._rtde_r.isConnected():
+        if self._rtde_r is None:
             return False
+        with self._rtde_r_lock:
+            if not self._rtde_r.isConnected():
+                return False
         if not self._control_enabled:
             return True
-        return self._rtde_c is not None and self._rtde_c.isConnected()
+        if self._rtde_c is None:
+            return False
+        with self._rtde_lock:
+            return self._rtde_c.isConnected()
+
+    @property
+    def is_protective_stopped(self) -> bool:
+        if self._rtde_r is None:
+            return False
+        with self._rtde_r_lock:
+            return self._rtde_r.isProtectiveStopped()
+
+    @property
+    def is_emergency_stopped(self) -> bool:
+        if self._rtde_r is None:
+            return False
+        with self._rtde_r_lock:
+            return self._rtde_r.isEmergencyStopped()
 
     def get_tcp_pose(self) -> Transform:
         self._ensure_receive_connected()
         assert self._rtde_r is not None
-        return Transform.from_ur_pose(self._rtde_r.getActualTCPPose())
+        with self._rtde_r_lock:
+            pose = self._rtde_r.getActualTCPPose()
+        return Transform.from_ur_pose(pose)
 
     def get_joint_positions(self) -> npt.NDArray[np.float64]:
         self._ensure_receive_connected()
         assert self._rtde_r is not None
-        return np.array(self._rtde_r.getActualQ(), dtype=np.float64)
+        with self._rtde_r_lock:
+            q = self._rtde_r.getActualQ()
+        return np.array(q, dtype=np.float64)
 
     def _ensure_receive_connected(self) -> None:
         assert self._rtde_r is not None, "Robot is not connected"
-        if not self._rtde_r.isConnected():
-            self._rtde_r.reconnect()
+        with self._rtde_r_lock:
+            if not self._rtde_r.isConnected():
+                self._rtde_r.reconnect()
 
     def _ensure_control_connected(self) -> None:
         assert self._rtde_c is not None, (
             "Robot control is disabled (control_enabled=False) — connect with "
             "control_enabled=True to jog, or drive the robot from the teach pendant instead"
         )
-        if not self._rtde_c.isConnected():
-            self._rtde_c.reconnect()
+        with self._rtde_lock:
+            if not self._rtde_c.isConnected():
+                self._rtde_c.reconnect()
+            if not self._rtde_c.isProgramRunning():
+                self._rtde_c.reuploadScript()
 
     def servo_to_pose(self, target: Transform, *, speed: float, acceleration: float) -> None:
         assert self._rtde_c is not None, (
             "Robot control is disabled (control_enabled=False) — connect with "
             "control_enabled=True to jog, or drive the robot from the teach pendant instead"
         )
-        with self._lock:
+        with self._state_lock:
             self._target_pose = target
             self._servo_speed = speed
             self._servo_acceleration = acceleration
@@ -128,30 +176,34 @@ class UR5eArm(RobotArm):
         assert self._rtde_c is not None
         self._paused.set()
         try:
-            self._rtde_c.moveJ(
-                np.asarray(joint_positions, dtype=np.float64).tolist(), speed, acceleration
-            )
+            with self._rtde_lock:
+                self._rtde_c.moveJ(
+                    np.asarray(joint_positions, dtype=np.float64).tolist(), speed, acceleration
+                )
         finally:
-            with self._lock:
+            with self._state_lock:
                 self._target_pose = self.get_tcp_pose()
             self._paused.clear()
 
     def stop(self) -> None:
         if self._rtde_c is not None:
-            self._rtde_c.servoStop()
+            with self._rtde_lock:
+                self._rtde_c.servoStop()
 
     def start_freedrive(self) -> None:
         self._ensure_control_connected()
         assert self._rtde_c is not None
         self._paused.set()
-        self._rtde_c.teachMode()
+        with self._rtde_lock:
+            self._rtde_c.teachMode()
         self._freedrive_active = True
 
     def stop_freedrive(self) -> None:
         assert self._rtde_c is not None, "Robot control is disabled (control_enabled=False)"
-        self._rtde_c.endTeachMode()
+        with self._rtde_lock:
+            self._rtde_c.endTeachMode()
         self._freedrive_active = False
-        with self._lock:
+        with self._state_lock:
             self._target_pose = self.get_tcp_pose()
         self._paused.clear()
 
@@ -162,24 +214,43 @@ class UR5eArm(RobotArm):
     def _servo_loop(self) -> None:
         assert self._rtde_c is not None
         dt = 1.0 / _CONTROL_HZ
+        was_safety_stopped = False
         while not self._stop_event.is_set():
             if self._paused.is_set():
                 time.sleep(dt)
                 continue
             try:
+                if self.is_protective_stopped or self.is_emergency_stopped:
+                    if not was_safety_stopped:
+                        print(
+                            "[UR5eArm] Robot is protective/emergency stopped — waiting for it "
+                            "to be cleared and re-enabled on the pendant."
+                        )
+                        was_safety_stopped = True
+                    time.sleep(_SAFETY_STOP_POLL_INTERVAL_S)
+                    continue
+                if was_safety_stopped:
+                    print("[UR5eArm] Safety stop cleared, resuming.")
+                    was_safety_stopped = False
+
                 self._ensure_control_connected()
-                period_start = self._rtde_c.initPeriod()
-                with self._lock:
+                # Re-check: _paused may have been set by another thread (e.g. start_freedrive())
+                # between the check above and here, and must not be missed right before servoL.
+                if self._paused.is_set():
+                    continue
+                with self._state_lock:
                     target, speed, acceleration = (
                         self._target_pose,
                         self._servo_speed,
                         self._servo_acceleration,
                     )
-                if target is not None:
-                    self._rtde_c.servoL(
-                        target.as_ur_pose(), speed, acceleration, dt, _LOOKAHEAD_TIME_S, _GAIN
-                    )
-                self._rtde_c.waitPeriod(period_start)
+                with self._rtde_lock:
+                    period_start = self._rtde_c.initPeriod()
+                    if target is not None:
+                        self._rtde_c.servoL(
+                            target.as_ur_pose(), speed, acceleration, dt, _LOOKAHEAD_TIME_S, _GAIN
+                        )
+                    self._rtde_c.waitPeriod(period_start)
             except Exception as error:
                 print(f"[UR5eArm] servo loop iteration failed, retrying: {error}")
                 time.sleep(dt)

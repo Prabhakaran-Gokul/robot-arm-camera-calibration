@@ -53,6 +53,17 @@ class RobotArm(ABC):
     @abstractmethod
     def is_freedrive_active(self) -> bool: ...
 
+    @property
+    def is_protective_stopped(self) -> bool:
+        """Whether the arm is in a safety-triggered stop that needs to be manually cleared on
+        its pendant/console before it will move again. Not abstract: arms without this concept
+        (e.g. MockRobotArm) can leave the default of always False."""
+        return False
+
+    @property
+    def is_emergency_stopped(self) -> bool:
+        return False
+
     def __enter__(self) -> RobotArm:
         self.connect()
         return self
