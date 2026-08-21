@@ -18,6 +18,7 @@ class MockCamera(Camera):
             (self._intrinsics.height, self._intrinsics.width, 3), 255, dtype=np.uint8
         )
         self._point_cloud: npt.NDArray[np.float64] = np.zeros((0, 3))
+        self._point_cloud_colors: npt.NDArray[np.uint8] = np.zeros((0, 3), dtype=np.uint8)
 
     def connect(self) -> None:
         self._connected = True
@@ -35,11 +36,18 @@ class MockCamera(Camera):
     def get_color_frame(self) -> npt.NDArray[np.uint8]:
         return self._color_frame
 
-    def get_point_cloud(self) -> npt.NDArray[np.float64]:
-        return self._point_cloud
+    def get_point_cloud(
+        self,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.uint8]]:
+        return self._point_cloud, self._point_cloud_colors
 
     def set_color_frame(self, frame: npt.NDArray[np.uint8]) -> None:
         self._color_frame = frame
 
-    def set_point_cloud(self, points: npt.NDArray[np.float64]) -> None:
+    def set_point_cloud(
+        self, points: npt.NDArray[np.float64], colors: npt.NDArray[np.uint8] | None = None
+    ) -> None:
         self._point_cloud = points
+        self._point_cloud_colors = (
+            colors if colors is not None else np.full((len(points), 3), 200, dtype=np.uint8)
+        )

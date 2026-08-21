@@ -66,13 +66,22 @@ class RealSenseCamera(Camera):
         frames = self._wait_for_aligned_frames()
         return np.asanyarray(frames.get_color_frame().get_data())
 
-    def get_point_cloud(self) -> npt.NDArray[np.float64]:
+    def get_point_cloud(
+        self,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.uint8]]:
         frames = self._wait_for_aligned_frames()
         depth_frame = frames.get_depth_frame()
-        self._pointcloud.map_to(frames.get_color_frame())
+        color_frame = frames.get_color_frame()
+        self._pointcloud.map_to(color_frame)
         points = self._pointcloud.calculate(depth_frame)
         vertices = np.asanyarray(points.get_vertices()).view(np.float32).reshape(-1, 3)
-        return vertices[vertices[:, 2] > 0].astype(np.float64)
+        # Depth is aligned to color (see connect()), so vertex i and color-pixel i are the same
+        # physical point — no separate UV/texture lookup needed, just the matching raster index.
+        colors_bgr = np.asanyarray(color_frame.get_data()).reshape(-1, 3)
+
+        valid = vertices[:, 2] > 0
+        colors_rgb = colors_bgr[valid][:, ::-1]
+        return vertices[valid].astype(np.float64), colors_rgb
 
     def _wait_for_aligned_frames(self) -> rs.composite_frame:
         assert self._pipeline is not None, "Camera is not connected"

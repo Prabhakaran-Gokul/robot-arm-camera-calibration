@@ -41,8 +41,11 @@ class Camera(ABC):
         """HxWx3, BGR."""
 
     @abstractmethod
-    def get_point_cloud(self) -> npt.NDArray[np.float64]:
-        """Nx3, meters, camera frame."""
+    def get_point_cloud(
+        self,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.uint8]]:
+        """(points, colors): points are Nx3 meters in camera frame; colors are Nx3 RGB uint8,
+        one per point, in the same order."""
 
     def __enter__(self) -> Camera:
         self.connect()

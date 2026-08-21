@@ -1,6 +1,7 @@
 """Verification viser app: overlays the live RealSense point cloud (transformed into the
-robot's base frame via a solved CalibrationResult) on the live URDF mesh. If calibration is
-accurate, the point cloud should form a "skin" around the robot mesh.
+robot's base frame via a solved CalibrationResult, colored with the camera's own RGB image) on
+the live URDF mesh. If calibration is accurate, the point cloud should form a "skin" around the
+robot mesh.
 
 Includes manual-correction buttons (Manual Correction panel) that apply a candidate fix on top
 of the loaded result and update the point cloud live, so a suspected sign/axis bug can be
@@ -25,7 +26,6 @@ from robot_arm_camera_calibration.core.transform import Transform
 from robot_arm_camera_calibration.robots.base import RobotArm
 
 _TICK_HZ = 15.0
-_POINT_COLOR = (80, 170, 255)
 
 
 def _flip_about_base_axis(axis: str) -> Transform:
@@ -57,7 +57,7 @@ class VerifyApp:
         self._point_cloud = self._server.scene.add_point_cloud(
             "/camera_point_cloud",
             points=np.zeros((0, 3), dtype=np.float32),
-            colors=_POINT_COLOR,
+            colors=np.zeros((0, 3), dtype=np.uint8),
             point_size=0.003,
         )
         self._build_gui()
@@ -131,8 +131,9 @@ class VerifyApp:
         self._camera_frustum.wxyz = wxyz
         self._camera_frustum.position = position
 
-        points_in_camera = self._camera.get_point_cloud()
+        points_in_camera, colors = self._camera.get_point_cloud()
         if points_in_camera.size == 0:
             return
         points_in_base = self._camera_pose_in_base.apply(points_in_camera)
         self._point_cloud.points = points_in_base.astype(np.float32)
+        self._point_cloud.colors = colors
