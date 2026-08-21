@@ -13,20 +13,23 @@ control_enabled=False skips creating it entirely, leaving the pendant in full co
 RTDEReceiveInterface (read-only) still works for capturing sample poses.
 
 RTDE connections can drop mid-session — most commonly when the robot's control state changes
-on the controller side, e.g. switching into freedrive/manual control from the pendant — and
-ur_rtde surfaces this as a raw exception (a boost.asio "End of file" is typical) rather than a
-clean error. Both interfaces expose isConnected()/reconnect() for exactly this; every call that
-touches them checks and transparently reconnects first, so a transient drop doesn't leave the
-robot's reported pose frozen or crash the caller.
+on the controller side — and ur_rtde surfaces this as a raw exception (a boost.asio "End of
+file" is typical) rather than a clean error. Both interfaces expose isConnected()/reconnect()
+for exactly this; every call that touches them checks and transparently reconnects first, so a
+transient drop doesn't leave the robot's reported pose frozen or crash the caller.
 
-start_freedrive()/stop_freedrive() use RTDEControlInterface's teachMode()/endTeachMode() for
-gravity-compensated manual guidance entirely through the RTDE control channel, so the robot
-never needs to leave Remote mode — unlike the pendant's own freedrive button, which needs Local
-control and would conflict with an active RTDE control connection.
+There is no freedrive support here: RTDEControlInterface's teachMode() looks like it should let
+the robot be pushed by hand without leaving Remote mode, but per UR's own forum (and the ISO
+10218-1 "Single Point of Control" principle their engineers cite) it does not actually engage
+while the robot's system-wide Remote Control setting is on — the same restriction that blocks
+the pendant's own freedrive button, since only one authority (pendant/local or external/remote)
+can hold motion control at a time. That's a firmware/safety-level restriction, not something to
+work around here. For manual guidance, use control_enabled=False (below) and toggle Remote
+Control off on the pendant for that session instead.
 
 RTDEControlInterface itself is not thread-safe (ur_rtde's own docs say so): calling any of its
 methods concurrently from two threads — e.g. the background servo loop mid-servoL() while a GUI
-callback calls teachMode() — corrupts its internal state, surfacing on the pendant as "another
+callback calls moveJ() — corrupts its internal state, surfacing on the pendant as "another
 thread is already controlling the robot" and in the log as "RTDE control script is not running".
 _rtde_lock serializes every direct call into it (_rtde_r_lock does the same for
 RTDEReceiveInterface); _state_lock is a separate, unrelated lock that only protects the plain
@@ -39,12 +42,20 @@ whenever isProgramRunning() reports false. There is deliberately no way to clear
 from software: is_protective_stopped/is_emergency_stopped only report the condition so the
 caller can surface it, since actually clearing a safety stop must stay a physical, human action
 on the pendant.
+
+isConnected()/isProgramRunning() can themselves raise instead of cleanly returning false once
+the underlying socket is already broken — _safe_check() treats that the same as a false answer
+so reconnection is still attempted rather than the exception propagating out of a routine status
+check. Genuinely unrecoverable failures (reconnect()/reuploadScript() itself raising) still
+propagate; callers (the viser app's GUI handlers) are responsible for catching and surfacing
+those rather than crashing.
 """
 
 from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 
 import numpy as np
 import numpy.typing as npt
@@ -58,6 +69,15 @@ _CONTROL_HZ = 500.0
 _LOOKAHEAD_TIME_S = 0.1
 _GAIN = 300
 _SAFETY_STOP_POLL_INTERVAL_S = 0.5
+
+
+def _safe_check(query: Callable[[], bool]) -> bool:
+    """A "still connected?"-style query can itself raise instead of cleanly returning False
+    when the underlying socket is already broken — treat that the same as a False answer."""
+    try:
+        return query()
+    except Exception:
+        return False
 
 
 class UR5eArm(RobotArm):
@@ -75,7 +95,6 @@ class UR5eArm(RobotArm):
         self._paused = threading.Event()
         self._stop_event = threading.Event()
         self._servo_thread: threading.Thread | None = None
-        self._freedrive_active = False
 
     def connect(self) -> None:
         self._rtde_r = rtde_receive.RTDEReceiveInterface(self._robot_ip)
@@ -88,8 +107,6 @@ class UR5eArm(RobotArm):
         self._servo_thread.start()
 
     def disconnect(self) -> None:
-        if self._freedrive_active:
-            self.stop_freedrive()
         self._stop_event.set()
         if self._servo_thread is not None:
             self._servo_thread.join(timeout=1.0)
@@ -105,28 +122,28 @@ class UR5eArm(RobotArm):
         if self._rtde_r is None:
             return False
         with self._rtde_r_lock:
-            if not self._rtde_r.isConnected():
+            if not _safe_check(self._rtde_r.isConnected):
                 return False
         if not self._control_enabled:
             return True
         if self._rtde_c is None:
             return False
         with self._rtde_lock:
-            return self._rtde_c.isConnected()
+            return _safe_check(self._rtde_c.isConnected)
 
     @property
     def is_protective_stopped(self) -> bool:
         if self._rtde_r is None:
             return False
         with self._rtde_r_lock:
-            return self._rtde_r.isProtectiveStopped()
+            return _safe_check(self._rtde_r.isProtectiveStopped)
 
     @property
     def is_emergency_stopped(self) -> bool:
         if self._rtde_r is None:
             return False
         with self._rtde_r_lock:
-            return self._rtde_r.isEmergencyStopped()
+            return _safe_check(self._rtde_r.isEmergencyStopped)
 
     def get_tcp_pose(self) -> Transform:
         self._ensure_receive_connected()
@@ -145,7 +162,7 @@ class UR5eArm(RobotArm):
     def _ensure_receive_connected(self) -> None:
         assert self._rtde_r is not None, "Robot is not connected"
         with self._rtde_r_lock:
-            if not self._rtde_r.isConnected():
+            if not _safe_check(self._rtde_r.isConnected):
                 self._rtde_r.reconnect()
 
     def _ensure_control_connected(self) -> None:
@@ -154,9 +171,9 @@ class UR5eArm(RobotArm):
             "control_enabled=True to jog, or drive the robot from the teach pendant instead"
         )
         with self._rtde_lock:
-            if not self._rtde_c.isConnected():
+            if not _safe_check(self._rtde_c.isConnected):
                 self._rtde_c.reconnect()
-            if not self._rtde_c.isProgramRunning():
+            if not _safe_check(self._rtde_c.isProgramRunning):
                 self._rtde_c.reuploadScript()
 
     def servo_to_pose(self, target: Transform, *, speed: float, acceleration: float) -> None:
@@ -190,27 +207,6 @@ class UR5eArm(RobotArm):
             with self._rtde_lock:
                 self._rtde_c.servoStop()
 
-    def start_freedrive(self) -> None:
-        self._ensure_control_connected()
-        assert self._rtde_c is not None
-        self._paused.set()
-        with self._rtde_lock:
-            self._rtde_c.teachMode()
-        self._freedrive_active = True
-
-    def stop_freedrive(self) -> None:
-        assert self._rtde_c is not None, "Robot control is disabled (control_enabled=False)"
-        with self._rtde_lock:
-            self._rtde_c.endTeachMode()
-        self._freedrive_active = False
-        with self._state_lock:
-            self._target_pose = self.get_tcp_pose()
-        self._paused.clear()
-
-    @property
-    def is_freedrive_active(self) -> bool:
-        return self._freedrive_active
-
     def _servo_loop(self) -> None:
         assert self._rtde_c is not None
         dt = 1.0 / _CONTROL_HZ
@@ -234,8 +230,9 @@ class UR5eArm(RobotArm):
                     was_safety_stopped = False
 
                 self._ensure_control_connected()
-                # Re-check: _paused may have been set by another thread (e.g. start_freedrive())
-                # between the check above and here, and must not be missed right before servoL.
+                # Re-check: _paused may have been set by another thread (e.g.
+                # move_to_joint_positions()) between the check above and here, and must not be
+                # missed right before servoL.
                 if self._paused.is_set():
                     continue
                 with self._state_lock:

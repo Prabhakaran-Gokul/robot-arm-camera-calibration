@@ -119,12 +119,6 @@ class CollectionApp:
                         button.on_hold(lambda _, a=axis, s=sign: self._on_rotate(s * a))
                         self._jog_buttons.append(button)
                 self._jog_status_markdown = gui.add_markdown("")
-
-            with gui.add_folder("Freedrive"):
-                self._start_freedrive_button = gui.add_button("Start Freedrive")
-                self._stop_freedrive_button = gui.add_button("Stop Freedrive", disabled=True)
-                self._start_freedrive_button.on_click(lambda _: self._on_start_freedrive())
-                self._stop_freedrive_button.on_click(lambda _: self._on_stop_freedrive())
         else:
             gui.add_markdown(
                 "**Jog:** disabled — move the robot from the teach pendant, then capture."
@@ -142,34 +136,41 @@ class CollectionApp:
             gui.add_button("Save Result").on_click(lambda _: self._on_save())
 
     def _on_connect(self) -> None:
-        self._robot.connect()
-        self._camera.connect()
-        self._viser_urdf = ViserUrdf(self._server, load_urdf(self._urdf_description))
+        try:
+            self._robot.connect()
+            self._camera.connect()
+            self._viser_urdf = ViserUrdf(self._server, load_urdf(self._urdf_description))
 
-        intrinsics = self._camera.get_intrinsics()
-        fov = 2 * np.arctan(intrinsics.height / (2 * intrinsics.fy))
-        aspect = intrinsics.width / intrinsics.height
-        # "/camera" starts at the origin as a placeholder — its true base-frame pose isn't known
-        # until calibration succeeds (that's what we're solving for), at which point _on_calibrate
-        # moves it there. Everything parented under "/camera" (i.e. "/camera/target") is drawn
-        # relative to it, so the marker's camera-relative pose composes correctly either way.
-        self._camera_frustum = self._server.scene.add_camera_frustum(
-            "/camera", fov=fov, aspect=aspect, scale=0.08
-        )
-        self._target_frame = self._server.scene.add_frame(
-            "/camera/target", visible=False, axes_length=0.08
-        )
+            intrinsics = self._camera.get_intrinsics()
+            fov = 2 * np.arctan(intrinsics.height / (2 * intrinsics.fy))
+            aspect = intrinsics.width / intrinsics.height
+            # "/camera" starts at the origin as a placeholder — its true base-frame pose isn't
+            # known until calibration succeeds (that's what we're solving for), at which point
+            # _on_calibrate moves it there. Everything parented under "/camera" (i.e.
+            # "/camera/target") is drawn relative to it, so the marker's camera-relative pose
+            # composes correctly either way.
+            self._camera_frustum = self._server.scene.add_camera_frustum(
+                "/camera", fov=fov, aspect=aspect, scale=0.08
+            )
+            self._target_frame = self._server.scene.add_frame(
+                "/camera/target", visible=False, axes_length=0.08
+            )
+        except Exception as error:
+            self._status_markdown.content = f"**Status:** ⚠️ connect failed: {error}"
+            return
         self._status_markdown.content = "**Status:** connected"
         self._disconnect_button.disabled = False
 
     def _on_disconnect(self) -> None:
-        self._robot.disconnect()
-        self._camera.disconnect()
-        self._status_markdown.content = "**Status:** disconnected"
+        try:
+            self._robot.disconnect()
+            self._camera.disconnect()
+        except Exception as error:
+            self._status_markdown.content = f"**Status:** ⚠️ disconnect failed: {error}"
+        else:
+            self._status_markdown.content = "**Status:** disconnected"
         self._disconnect_button.disabled = True
         if self._jog_enabled:
-            self._start_freedrive_button.disabled = False
-            self._stop_freedrive_button.disabled = True
             for button in self._jog_buttons:
                 button.disabled = False
 
@@ -188,36 +189,16 @@ class CollectionApp:
         if not self._robot.is_connected:
             self._jog_status_markdown.content = "Connect to the robot before jogging."
             return
-        if self._robot.is_freedrive_active:
-            self._jog_status_markdown.content = "Stop freedrive before using the jog buttons."
-            return
         try:
             self._jog.nudge(translation_delta_m, rotation_delta_deg)
             self._jog_status_markdown.content = ""
-        except CalibrationError as error:
+        except Exception as error:
             self._jog_status_markdown.content = f"⚠️ {error}"
-
-    def _on_start_freedrive(self) -> None:
-        if not self._robot.is_connected:
-            self._jog_status_markdown.content = "Connect to the robot before using freedrive."
-            return
-        self._robot.start_freedrive()
-        self._start_freedrive_button.disabled = True
-        self._stop_freedrive_button.disabled = False
-        for button in self._jog_buttons:
-            button.disabled = True
-
-    def _on_stop_freedrive(self) -> None:
-        self._robot.stop_freedrive()
-        self._start_freedrive_button.disabled = False
-        self._stop_freedrive_button.disabled = True
-        for button in self._jog_buttons:
-            button.disabled = False
 
     def _on_capture(self) -> None:
         try:
             sample = self._session.capture_sample()
-        except CalibrationError as error:
+        except Exception as error:
             self._samples_markdown.content = f"⚠️ Capture failed: {error}"
             return
 
