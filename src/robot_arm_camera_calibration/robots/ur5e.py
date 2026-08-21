@@ -49,6 +49,19 @@ so reconnection is still attempted rather than the exception propagating out of 
 check. Genuinely unrecoverable failures (reconnect()/reuploadScript() itself raising) still
 propagate; callers (the viser app's GUI handlers) are responsible for catching and surfacing
 those rather than crashing.
+
+ur_rtde reports/accepts TCP poses in the robot controller's own "Base" frame, which — per UR's
+own ur_description documentation — shares its origin with the URDF's base_link but is rotated
+180 degrees about Z from it. Since this library's "base frame" (RobotArm.get_tcp_pose's
+contract) is meant to be base_link (that's the frame ViserUrdf renders the mesh in, and the
+frame calibration results need to be expressed in for the point cloud to land on the mesh),
+_BASE_LINK_ROTATION_CORRECTION is applied once at the boundary in both directions: get_tcp_pose()
+converts controller-Base readings into base_link, and _servo_loop() converts base_link targets
+back into controller-Base before calling servoL (a 180-degree rotation is its own inverse, so
+the same constant does both). Getting this backwards or missing it entirely doesn't break the
+math — calibration still converges and reports a good residual, since every pose involved is
+self-consistently in the wrong frame — it just makes the result look mirrored through the base
+origin when compared against the rendered mesh.
 """
 
 from __future__ import annotations
@@ -61,6 +74,7 @@ import numpy as np
 import numpy.typing as npt
 import rtde_control
 import rtde_receive
+from scipy.spatial.transform import Rotation
 
 from robot_arm_camera_calibration.core.transform import Transform
 from robot_arm_camera_calibration.robots.base import RobotArm
@@ -69,6 +83,9 @@ _CONTROL_HZ = 500.0
 _LOOKAHEAD_TIME_S = 0.1
 _GAIN = 300
 _SAFETY_STOP_POLL_INTERVAL_S = 0.5
+_BASE_LINK_ROTATION_CORRECTION = Transform.from_rotation_translation(
+    Rotation.from_euler("z", 180, degrees=True).as_matrix(), np.zeros(3)
+)
 
 
 def _safe_check(query: Callable[[], bool]) -> bool:
@@ -150,7 +167,7 @@ class UR5eArm(RobotArm):
         assert self._rtde_r is not None
         with self._rtde_r_lock:
             pose = self._rtde_r.getActualTCPPose()
-        return Transform.from_ur_pose(pose)
+        return _BASE_LINK_ROTATION_CORRECTION @ Transform.from_ur_pose(pose)
 
     def get_joint_positions(self) -> npt.NDArray[np.float64]:
         self._ensure_receive_connected()
@@ -244,8 +261,17 @@ class UR5eArm(RobotArm):
                 with self._rtde_lock:
                     period_start = self._rtde_c.initPeriod()
                     if target is not None:
+                        # target is in base_link (this library's "base frame"); servoL needs the
+                        # controller's native Base frame, so convert back the same way
+                        # get_tcp_pose() converted in (the correction is its own inverse).
+                        controller_target = _BASE_LINK_ROTATION_CORRECTION @ target
                         self._rtde_c.servoL(
-                            target.as_ur_pose(), speed, acceleration, dt, _LOOKAHEAD_TIME_S, _GAIN
+                            controller_target.as_ur_pose(),
+                            speed,
+                            acceleration,
+                            dt,
+                            _LOOKAHEAD_TIME_S,
+                            _GAIN,
                         )
                     self._rtde_c.waitPeriod(period_start)
             except Exception as error:
