@@ -20,6 +20,16 @@ def transform_to_wxyz_position(
     return (float(w), float(x), float(y), float(z)), (float(tx), float(ty), float(tz))
 
 
+def wxyz_position_to_transform(
+    wxyz: npt.NDArray[np.float64], position: npt.NDArray[np.float64]
+) -> Transform:
+    """Inverse of transform_to_wxyz_position — reads a live-dragged viser handle's pose back
+    into a Transform."""
+    w, x, y, z = wxyz
+    rotation = Rotation.from_quat([x, y, z, w]).as_matrix()
+    return Transform.from_rotation_translation(rotation, np.asarray(position))
+
+
 def rotation_axis_coverage(rotations: list[npt.NDArray[np.float64]]) -> float:
     """0-1 score for how well the sample set's relative-rotation AXES span 3D space.
 

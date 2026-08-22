@@ -62,8 +62,9 @@ def _verify(args: argparse.Namespace) -> None:
     config = CalibrationConfig.from_yaml(Path(args.config))
     # VerifyApp only reads robot state, never commands motion, so it never needs control.
     robot, camera = _build_robot_and_camera(config, args.mock, control_enabled=False)
-    result = CalibrationResult.from_yaml(Path(args.result))
-    VerifyApp(robot, camera, result, port=args.port).run()
+    result_path = Path(args.result)
+    result = CalibrationResult.from_yaml(result_path)
+    VerifyApp(robot, camera, result, port=args.port, result_path=result_path).run()
 
 
 def main() -> None:
